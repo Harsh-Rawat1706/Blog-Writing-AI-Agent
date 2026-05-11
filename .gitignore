@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual Environment
+chatu/
+
+# Environment variables
+.env
+
+# Images
+images/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
