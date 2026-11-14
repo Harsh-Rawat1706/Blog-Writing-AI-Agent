@@ -1,6 +1,6 @@
 langgraph
 langchain-core
-langchain-groq
+langchain-groq>=0.3.8
 groq
 tavily-python
 python-dotenv

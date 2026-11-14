@@ -170,8 +170,7 @@ class ReviewResult(BaseModel):
 
     approved: bool = True
     misleading: bool = False
-    # Keep the review response compact so JSON mode does not run out of
-    # completion tokens on long drafts.
+    # Keep the review response compact for long drafts.
     unsupported_claims: list[str] = Field(default_factory=list, max_length=8)
     issues: list[str] = Field(default_factory=list, max_length=6)
     revision_instructions: list[str] = Field(default_factory=list, max_length=5)
@@ -306,7 +305,7 @@ def route_research(state: BlogState) -> dict[str, Any]:
     if not state["topic"].strip():
         raise ValueError("Please enter a topic.")
 
-    model = router_llm.with_structured_output(RouterDecision, method="json_mode")
+    model = router_llm.with_structured_output(RouterDecision, method="json_schema")
     result = invoke_with_retry(
         model,
         [
@@ -463,7 +462,7 @@ def planner_node(state: BlogState) -> dict[str, Any]:
         for e in state.get("evidence", [])
     ) or "No external research was retrieved."
 
-    model = planner_llm.with_structured_output(BlogPlan, method="json_mode")
+    model = planner_llm.with_structured_output(BlogPlan, method="json_schema")
     plan = invoke_with_retry(
         model,
         [
@@ -636,7 +635,7 @@ def merge_and_review(state: BlogState) -> dict[str, Any]:
     else:
         draft += "_No external sources were retrieved for this article._\n"
 
-    review_model = reviewer_llm.with_structured_output(ReviewResult, method="json_mode")
+    review_model = reviewer_llm.with_structured_output(ReviewResult, method="json_schema")
     review = invoke_with_retry(
         review_model,
         [

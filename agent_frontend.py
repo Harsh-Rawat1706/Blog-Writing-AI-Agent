@@ -109,6 +109,9 @@ if "last_out" not in st.session_state:
 if "logs" not in st.session_state:
     st.session_state["logs"] = []
 
+if "last_error" not in st.session_state:
+    st.session_state["last_error"] = None
+
 
 # ============================================================
 # SIDEBAR
@@ -260,6 +263,7 @@ with st.sidebar:
                 "review": None,
                 "generation_logs": ["Loaded a previously generated blog."]
             }
+            st.session_state["last_error"] = None
 
             st.rerun()
 
@@ -283,6 +287,7 @@ tab_plan, tab_evidence, tab_preview, tab_logs = st.tabs(
 # ============================================================
 
 if run_btn:
+    st.session_state["last_error"] = None
 
     # Validate topic
     if not topic.strip():
@@ -353,12 +358,13 @@ if run_btn:
     except Exception as error:
 
         status.update(
-            label="Blog generation blocked or failed",
+            label="Blog generation failed",
             state="error",
             expanded=True
         )
 
         st.error(str(error))
+        st.session_state["last_error"] = str(error)
 
         st.session_state["logs"].append(
             f"ERROR: {str(error)}"
@@ -629,8 +635,10 @@ if output:
 
 
 else:
-
-    st.info(
-        "Enter your blog topic, select your target "
-        "audience and click Generate Blog."
-    )
+    if st.session_state["last_error"] and not run_btn:
+        st.error(f"Last generation failed: {st.session_state['last_error']}")
+    elif not topic.strip():
+        st.info(
+            "Enter your blog topic, select your target "
+            "audience and click Generate Blog."
+        )
