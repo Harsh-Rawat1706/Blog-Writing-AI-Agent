@@ -1,8 +1,3 @@
-guardrails-ai>=0.6.0
-guardrails-ai-valid-json
-guardrails-ai-nsfw-text
-guardrails-ai-provenance-nli
-
 langgraph
 langchain-core
 langchain-groq

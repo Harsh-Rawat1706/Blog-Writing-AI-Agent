@@ -213,10 +213,10 @@ Deploy this repository as a Blueprint using `render.yaml`, then enter your
 `GROQ_API_KEY` when prompted. Add `TAVILY_API_KEY` in the Render service
 environment if you want web research.
 The Blueprint pins Python to 3.11.9 and disables Streamlit's development file
-watcher. NLTK downloads are stored in a private `.nltk_data` directory.
+watcher.
 
-The local NSFW classifier is loaded only when the first blog is generated, so
-initial app startup does not wait for its model weights to load.
+The project does not install or use Guardrails AI. It uses a Groq-powered
+factuality review after generation.
 ---
 # Running the Project
 ```text

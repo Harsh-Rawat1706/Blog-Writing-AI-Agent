@@ -95,7 +95,7 @@ st.title("✍️ AI Blog Writing Agent")
 
 st.caption(
     "Generate audience-aware blogs using LangGraph, "
-    "Groq, Tavily and Guardrails AI."
+    "Groq, and Tavily."
 )
 
 
@@ -256,12 +256,9 @@ with st.sidebar:
                 "plan": None,
 
                 "evidence": [],
-
                 "final": markdown,
-
-                "policy_status": "Previously generated",
-
-                "policy_reason": ""
+                "review": None,
+                "generation_logs": ["Loaded a previously generated blog."]
             }
 
             st.rerun()
@@ -276,7 +273,7 @@ tab_plan, tab_evidence, tab_preview, tab_logs = st.tabs(
         "🧩 Blog Plan",
         "🔎 Research Evidence",
         "📝 Blog Preview",
-        "🛡️ Guardrails & Logs"
+        "🧾 Review & Logs"
     ]
 )
 
@@ -315,34 +312,10 @@ if run_btn:
     # --------------------------------------------------------
 
     inputs = {
-
         "topic": topic.strip(),
-
-        "audience": audience.strip(),
-
-        "mode": "",
-
-        "needs_research": False,
-
-        "queries": [],
-
-        "evidence": [],
-
-        "plan": None,
-
+        "audience_preference": audience.strip() or "AUTO",
+        "tone_preference": "AUTO",
         "as_of": as_of.isoformat(),
-
-        "recency_days": 7,
-
-        "sections": [],
-
-        "merged_md": "",
-
-        "final": "",
-
-        "policy_status": "",
-
-        "policy_reason": ""
     }
 
 
@@ -357,7 +330,7 @@ if run_btn:
 
     try:
 
-        status.write("Running input safety checks...")
+        status.write("Preparing the generation workflow...")
 
         with st.spinner(
             "Researching and generating your blog..."
@@ -375,9 +348,7 @@ if run_btn:
             expanded=False
         )
 
-        st.success(
-            "Your blog has been generated and validated."
-        )
+        st.success("Your blog has been generated and reviewed.")
 
     except Exception as error:
 
@@ -600,34 +571,31 @@ if output:
 
 
     # ========================================================
-    # TAB 4: GUARDRAILS AND LOGS
+    # TAB 4: REVIEW AND LOGS
     # ========================================================
 
     with tab_logs:
 
-        st.subheader(
-            "🛡️ Guardrails Status"
-        )
+        st.subheader("Factuality Review")
 
-        policy_status = output.get(
-            "policy_status",
-            "Not available"
-        )
+        review = output.get("review")
+        if review:
+            if review.get("misleading"):
+                st.error("The review identified potentially misleading content.")
+            else:
+                st.success("The blog passed the misleading-content review.")
 
-        policy_reason = output.get(
-            "policy_reason",
-            ""
-        )
-
-        st.write(
-            "**Validation Status:**",
-            policy_status
-        )
-
-        st.write(
-            "**Editorial Review:**",
-            policy_reason
-        )
+            for label, key in (
+                ("Unsupported claims", "unsupported_claims"),
+                ("Issues", "issues"),
+                ("Revision instructions", "revision_instructions"),
+            ):
+                items = review.get(key, [])
+                if items:
+                    st.markdown(f"**{label}**")
+                    st.write(items)
+        else:
+            st.info("No factuality review is available for this saved blog.")
 
         st.divider()
 
@@ -635,20 +603,28 @@ if output:
             "Generation Logs"
         )
 
+        generation_logs = output.get("generation_logs", [])
+        if generation_logs:
+            st.text_area(
+                "Workflow",
+                value="\n".join(generation_logs),
+                height=220
+            )
+
         if st.session_state["logs"]:
 
             st.text_area(
-                "Logs",
+                "Errors",
                 value="\n\n".join(
                     st.session_state["logs"][-50:]
                 ),
                 height=400
             )
 
-        else:
+        elif not generation_logs:
 
             st.info(
-                "No errors recorded."
+                "No workflow or error logs recorded."
             )
 
 

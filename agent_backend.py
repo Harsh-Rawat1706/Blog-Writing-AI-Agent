@@ -5,7 +5,6 @@ import os
 import re
 import time
 from pathlib import Path
-from threading import Lock
 from typing import Annotated, Any, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -15,10 +14,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-
-# Guardrails AI: NSFW validator. Install with requirements.txt
-from guardrails import Guard, OnFailAction
-from guardrails_ai.nsfw_text import NSFWText
 
 load_dotenv()
 
@@ -33,9 +28,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is missing. Add it to your .env file.")
-
-nsfw_guard: Guard | None = None
-_nsfw_guard_lock = Lock()
 
 router_llm = ChatGroq(
     model=GROQ_MODEL,
@@ -217,13 +209,6 @@ class ReviewResult(BaseModel):
         return data
 
 
-class NSFWContextDecision(BaseModel):
-    is_explicit_sexual_content: bool = Field(
-        description="True only when the submitted text itself contains sexually explicit or pornographic content."
-    )
-    reason: str = Field(default="", max_length=300)
-
-
 class EvidenceItem(BaseModel):
     title: str
     url: str
@@ -247,7 +232,7 @@ class BlogState(TypedDict, total=False):
     sections: Annotated[list[tuple[int, str]], operator.add]
     final: str
     review: dict[str, Any]
-    guardrail_logs: Annotated[list[str], operator.add]
+    generation_logs: Annotated[list[str], operator.add]
     error: str
 
 
@@ -293,97 +278,6 @@ def dump_model(value: Any) -> dict[str, Any]:
     raise TypeError(f"Expected Pydantic model or dict, got {type(value)!r}")
 
 
-NSFW_CONTEXT_PROMPT = """
-You are a precise content-safety reviewer for a professional educational blog-writing system.
-
-Determine whether the supplied text itself contains sexually explicit, pornographic,
-or erotic content.
-
-Important classification rules:
-- Mark is_explicit_sexual_content=true ONLY when the text actually contains explicit
-  sexual or pornographic material.
-- Do NOT flag ordinary discussion of AI risks, safety, misuse, governance, policy,
-  accountability, human goals, public participation, societal well-being, or ethics.
-- Do NOT infer sexual meaning from isolated words such as "risk", "powerful",
-  "human", "participation", "path forward", "misuse", or "safeguarding".
-- Educational, medical, historical, policy, and journalistic discussion is allowed
-  unless the actual text is sexually explicit.
-- Evaluate the complete meaning and context, not isolated words.
-
-Return ONLY one valid JSON object matching the NSFWContextDecision schema.
-Your response must be JSON; do not use Markdown fences or add explanations.
-"""
-
-
-def check_nsfw(text: str) -> None:
-    """
-    Run the local NSFW classifier first. If it flags text, use a contextual
-    Groq moderation check to distinguish genuinely explicit content from a
-    classifier false positive. Fail closed if the secondary check cannot run.
-    """
-    if not text or not text.strip():
-        return
-
-    validator_error: Exception | None = None
-    try:
-        global nsfw_guard
-        if nsfw_guard is None:
-            with _nsfw_guard_lock:
-                if nsfw_guard is None:
-                    nsfw_guard = Guard().use(
-                        NSFWText(
-                            # A higher threshold reduces false positives on neutral,
-                            # informational writing about risks, governance, and safety.
-                            threshold=float(os.getenv("NSFW_THRESHOLD", "0.90")),
-                            # Evaluate the full passage so the classifier has context.
-                            validation_method="full",
-                            on_fail=OnFailAction.EXCEPTION,
-                            use_local=True,
-                        )
-                    )
-        outcome = nsfw_guard.validate(text)
-        if getattr(outcome, "validation_passed", True):
-            return
-        validator_error = RuntimeError("Local NSFW validator returned validation_passed=False.")
-    except Exception as exc:
-        validator_error = exc
-
-    # The local classifier can over-flag neutral policy/safety language.
-    # Ask a separate contextual classifier before blocking the blog.
-    contextual_model = router_llm.with_structured_output(
-        NSFWContextDecision,
-        method="json_mode",
-    )
-    try:
-        decision = invoke_with_retry(
-            contextual_model,
-            [
-                SystemMessage(content=NSFW_CONTEXT_PROMPT),
-                HumanMessage(
-                    content=(
-                        "Classify the following complete text. Decide only whether "
-                        "it contains explicit sexual or pornographic content. "
-                        "Return the result as a valid JSON object.\n\n"
-                        f"TEXT TO REVIEW:\n{text[:18000]}"
-                    )
-                ),
-            ],
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "The local NSFW validator flagged this text, and the contextual "
-            "moderation check could not complete. No content was approved. "
-            f"Validator result: {validator_error}. Secondary check error: {exc}"
-        ) from exc
-
-    if decision.is_explicit_sexual_content:
-        raise ValueError(
-            "Content blocked: the contextual safety check identified explicit "
-            f"sexual content. {decision.reason}".strip()
-        )
-
-
-
 def save_blog(topic: str, markdown: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", topic.lower()).strip("_")[:70] or "blog"
     path = OUTPUT_DIR / f"{slug}.md"
@@ -392,64 +286,6 @@ def save_blog(topic: str, markdown: str) -> str:
         path = OUTPUT_DIR / f"{slug}_{int(time.time())}.md"
     path.write_text(markdown, encoding="utf-8")
     return str(path)
-
-
-# ---------------------------------------------------------------------
-# Input policy / topic moderation
-# ---------------------------------------------------------------------
-TOPIC_POLICY_PROMPT = """
-You are the content-policy classifier for a professional blog-writing system.
-Classify the requested blog topic, not the user's character or intent.
-Block only if the requested blog itself is primarily:
-1) sexually explicit / pornographic / erotic,
-2) designed to deceive readers with fabricated facts, fake evidence,
-   impersonation, scams, or knowingly false claims,
-3) instructional content that facilitates serious wrongdoing.
-Allow legitimate education, journalism, criticism, health education,
-history, fiction clearly labeled as fiction, and analysis of misinformation.
-
-Return ONLY a valid JSON object with these keys:
-{"approved": true, "misleading": false, "issues": [],
- "unsupported_claims": [], "revision_instructions": []}
-Set approved=false only when the topic itself violates one of the listed rules.
-Your response must be JSON; do not use Markdown fences or add explanations.
-"""
-
-
-def moderate_topic(state: BlogState) -> dict[str, Any]:
-    topic = state["topic"].strip()
-    if not topic:
-        raise ValueError("Please enter a topic.")
-    check_nsfw(topic)
-
-    decision_model = router_llm.with_structured_output(
-        ReviewResult,
-        method="json_mode",
-    )
-    result = invoke_with_retry(
-        decision_model,
-        [
-            SystemMessage(content=TOPIC_POLICY_PROMPT),
-            HumanMessage(
-                content=(
-                    "Assess this requested blog topic. Set approved=false and "
-                    "explain briefly if it violates the policy.\n\n"
-                    f"Topic: {topic}\n"
-                    "Return the assessment as a valid JSON object."
-                )
-            ),
-        ],
-    )
-    if not result.approved or result.misleading:
-        reason = "; ".join(result.issues or result.revision_instructions) or "Policy check failed."
-        raise ValueError(f"Topic blocked by content policy: {reason}")
-
-    return {
-        "guardrail_logs": [
-            "Input policy check passed.",
-            "Guardrails NSFW check passed for the topic.",
-        ]
-    }
 
 
 # ---------------------------------------------------------------------
@@ -467,6 +303,9 @@ Your response must be JSON; do not use Markdown fences or add explanations.
 
 
 def route_research(state: BlogState) -> dict[str, Any]:
+    if not state["topic"].strip():
+        raise ValueError("Please enter a topic.")
+
     model = router_llm.with_structured_output(RouterDecision, method="json_mode")
     result = invoke_with_retry(
         model,
@@ -491,7 +330,7 @@ def research_node(state: BlogState) -> dict[str, Any]:
     if not TAVILY_API_KEY:
         return {
             "evidence": [],
-            "guardrail_logs": ["TAVILY_API_KEY not configured; continuing without web research."],
+            "generation_logs": ["TAVILY_API_KEY not configured; continuing without web research."],
         }
 
     from tavily import TavilyClient
@@ -531,7 +370,7 @@ def research_node(state: BlogState) -> dict[str, Any]:
     logs = [f"Research completed: {len(unique)} unique sources."]
     if errors:
         logs.append("Some research queries failed: " + " | ".join(errors[:2]))
-    return {"evidence": list(unique.values())[:10], "guardrail_logs": logs}
+    return {"evidence": list(unique.values())[:10], "generation_logs": logs}
 
 
 def after_router(state: BlogState) -> str:
@@ -649,7 +488,7 @@ def planner_node(state: BlogState) -> dict[str, Any]:
     return {
         "plan": plan.model_dump(),
         "audience": plan.audience,
-        "guardrail_logs": [
+        "generation_logs": [
             f"Plan schema validation passed ({len(plan.tasks)} sections).",
             f"Audience selected: {plan.audience}",
         ],
@@ -728,10 +567,9 @@ Write this section now. Do not add a preamble.
     section = (response.content or "").strip()
     if not section:
         raise RuntimeError(f"Writer returned an empty section: {task.title}")
-    check_nsfw(section)
     return {
         "sections": [(task.id, section)],
-        "guardrail_logs": [f"Section {task.id} generated and NSFW-checked."],
+        "generation_logs": [f"Section {task.id} generated."],
     }
 
 
@@ -839,8 +677,7 @@ Original draft:
         if not draft:
             raise RuntimeError("Revision pass returned an empty blog.")
 
-        # Re-run NSFW guard and a second factuality review.
-        check_nsfw(draft)
+        # Re-run the factuality review after revision.
         review = invoke_with_retry(
             review_model,
             [
@@ -863,14 +700,12 @@ Original draft:
 
     # Do not silently publish unsupported factual statements. The review
     # result is included in the UI so the user can inspect any remaining flags.
-    check_nsfw(draft)
     output_path = save_blog(state["topic"], draft)
 
     return {
         "final": draft,
         "review": review.model_dump(),
-        "guardrail_logs": [
-            "Whole-blog NSFW check passed.",
+        "generation_logs": [
             "Factuality / misleading-content review completed.",
             f"Saved Markdown: {output_path}",
         ],
@@ -882,15 +717,13 @@ Original draft:
 # ---------------------------------------------------------------------
 graph = StateGraph(BlogState)
 
-graph.add_node("moderate_topic", moderate_topic)
 graph.add_node("router", route_research)
 graph.add_node("research", research_node)
 graph.add_node("planner", planner_node)
 graph.add_node("writer", writer_node)
 graph.add_node("review", merge_and_review)
 
-graph.add_edge(START, "moderate_topic")
-graph.add_edge("moderate_topic", "router")
+graph.add_edge(START, "router")
 graph.add_conditional_edges(
     "router",
     after_router,
@@ -920,7 +753,7 @@ def generate_blog(
         "queries": [],
         "evidence": [],
         "sections": [],
-        "guardrail_logs": [],
+        "generation_logs": [],
     }
     return app.invoke(initial_state)
 
