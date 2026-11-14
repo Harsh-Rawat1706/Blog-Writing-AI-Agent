@@ -15,7 +15,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-# Guardrails AI: NSFW validator. Install with requirements.txt.
+# Guardrails AI: NSFW validator. Install with requirements.txt
 from guardrails import Guard, OnFailAction
 from guardrails_ai.nsfw_text import NSFWText
 
