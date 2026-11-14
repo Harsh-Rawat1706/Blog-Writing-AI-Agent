@@ -8,8 +8,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from agent_backend import app
-
 
 # ============================================================
 # HELPER FUNCTIONS
@@ -364,6 +362,8 @@ if run_btn:
         with st.spinner(
             "Researching and generating your blog..."
         ):
+
+            from agent_backend import app
 
             output = app.invoke(inputs)
 

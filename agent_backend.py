@@ -5,6 +5,7 @@ import os
 import re
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Any, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-# Guardrails AI: NSFW validator. Install with requirements.txt.
+# Guardrails AI: NSFW validator. Install with requirements.txt
 from guardrails import Guard, OnFailAction
 from guardrails_ai.nsfw_text import NSFWText
 
@@ -33,17 +34,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is missing. Add it to your .env file.")
 
-nsfw_guard = Guard().use(
-    NSFWText(
-        # A higher threshold reduces false positives on neutral,
-        # informational writing about risks, governance, and safety.
-        threshold=float(os.getenv("NSFW_THRESHOLD", "0.90")),
-        # Evaluate the full passage so the classifier has context.
-        validation_method="full",
-        on_fail=OnFailAction.EXCEPTION,
-        use_local=True,
-    )
-)
+nsfw_guard: Guard | None = None
+_nsfw_guard_lock = Lock()
 
 router_llm = ChatGroq(
     model=GROQ_MODEL,
@@ -334,6 +326,21 @@ def check_nsfw(text: str) -> None:
 
     validator_error: Exception | None = None
     try:
+        global nsfw_guard
+        if nsfw_guard is None:
+            with _nsfw_guard_lock:
+                if nsfw_guard is None:
+                    nsfw_guard = Guard().use(
+                        NSFWText(
+                            # A higher threshold reduces false positives on neutral,
+                            # informational writing about risks, governance, and safety.
+                            threshold=float(os.getenv("NSFW_THRESHOLD", "0.90")),
+                            # Evaluate the full passage so the classifier has context.
+                            validation_method="full",
+                            on_fail=OnFailAction.EXCEPTION,
+                            use_local=True,
+                        )
+                    )
         outcome = nsfw_guard.validate(text)
         if getattr(outcome, "validation_passed", True):
             return
